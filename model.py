@@ -6,7 +6,7 @@ class LayerNormalization(nn.Module):
 
     def __init__(self, features: int, eps:float=10**-6) -> None:
         super().__init__()
-        self.eps = eps
+        self.eps = eps # dong: to avoid divide by zero
         self.alpha = nn.Parameter(torch.ones(features)) # alpha is a learnable parameter
         self.bias = nn.Parameter(torch.zeros(features)) # bias is a learnable parameter
 
@@ -55,16 +55,16 @@ class PositionalEncoding(nn.Module):
         pe = torch.zeros(seq_len, d_model)
         # Create a vector of shape (seq_len)
         position = torch.arange(0, seq_len, dtype=torch.float).unsqueeze(1) # (seq_len, 1)
-        # Create a vector of shape (d_model)
+        # Create a vector of shape (d_model) #dong: log space for numerical stability
         div_term = torch.exp(torch.arange(0, d_model, 2).float() * (-math.log(10000.0) / d_model)) # (d_model / 2)
-        # Apply sine to even indices
+        # Apply sine to even indices # dong: start from 0, every 2 pos
         pe[:, 0::2] = torch.sin(position * div_term) # sin(position * (10000 ** (2i / d_model))
-        # Apply cosine to odd indices
+        # Apply cosine to odd indices # dong: start from 1, every 2 pos
         pe[:, 1::2] = torch.cos(position * div_term) # cos(position * (10000 ** (2i / d_model))
         # Add a batch dimension to the positional encoding
         pe = pe.unsqueeze(0) # (1, seq_len, d_model)
         # Register the positional encoding as a buffer
-        self.register_buffer('pe', pe)
+        self.register_buffer('pe', pe) # dong: for non-trainable params
 
     def forward(self, x):
         x = x + (self.pe[:, :x.shape[1], :]).requires_grad_(False) # (batch, seq_len, d_model)
