@@ -6,13 +6,16 @@ class LayerNormalization(nn.Module):
 
     def __init__(self, features: int, eps:float=10**-6) -> None:
         super().__init__()
+        # dong: features is the feature dim
         self.eps = eps # dong: to avoid divide by zero
         self.alpha = nn.Parameter(torch.ones(features)) # alpha is a learnable parameter
         self.bias = nn.Parameter(torch.zeros(features)) # bias is a learnable parameter
 
     def forward(self, x):
         # x: (batch, seq_len, hidden_size)
-         # Keep the dimension for broadcasting
+        # Keep the dimension for broadcasting
+        # dong: dim = -1 means it calculates the mean across the last dim (hidden_size)
+        # dong: keepdim = True means it retains the reduced dimension as a singleton dimension
         mean = x.mean(dim = -1, keepdim = True) # (batch, seq_len, 1)
         # Keep the dimension for broadcasting
         std = x.std(dim = -1, keepdim = True) # (batch, seq_len, 1)
@@ -37,6 +40,7 @@ class InputEmbeddings(nn.Module):
         super().__init__()
         self.d_model = d_model
         self.vocab_size = vocab_size
+        # dong: embedding layer is trainable of a matrix (vocab_size, d_model)
         self.embedding = nn.Embedding(vocab_size, d_model)
 
     def forward(self, x):
@@ -78,6 +82,8 @@ class ResidualConnection(nn.Module):
             self.norm = LayerNormalization(features)
     
         def forward(self, x, sublayer):
+            #Dong: sublayer is the previous layer
+            #dong: some paper also did first sublayer() followed by norm()
             return x + self.dropout(sublayer(self.norm(x)))
 
 class MultiHeadAttentionBlock(nn.Module):
@@ -93,10 +99,10 @@ class MultiHeadAttentionBlock(nn.Module):
         self.w_q = nn.Linear(d_model, d_model, bias=False) # Wq
         self.w_k = nn.Linear(d_model, d_model, bias=False) # Wk
         self.w_v = nn.Linear(d_model, d_model, bias=False) # Wv
-        self.w_o = nn.Linear(d_model, d_model, bias=False) # Wo
+        self.w_o = nn.Linear(d_model, d_model, bias=False) # Wo #dong: for final output
         self.dropout = nn.Dropout(dropout)
 
-    @staticmethod
+    @staticmethod #dong: staticmethod means you don't need an instance of the class to call this method
     def attention(query, key, value, mask, dropout: nn.Dropout):
         d_k = query.shape[-1]
         # Just apply the formula from the paper
@@ -104,7 +110,7 @@ class MultiHeadAttentionBlock(nn.Module):
         attention_scores = (query @ key.transpose(-2, -1)) / math.sqrt(d_k)
         if mask is not None:
             # Write a very low value (indicating -inf) to the positions where mask == 0
-            attention_scores.masked_fill_(mask == 0, -1e9)
+            attention_scores.masked_fill_(mask == 0, -1e9) #dong: all 0 in mask will be replaced by -1e9
         attention_scores = attention_scores.softmax(dim=-1) # (batch, h, seq_len, seq_len) # Apply softmax
         if dropout is not None:
             attention_scores = dropout(attention_scores)
@@ -113,11 +119,14 @@ class MultiHeadAttentionBlock(nn.Module):
         return (attention_scores @ value), attention_scores
 
     def forward(self, q, k, v, mask):
+        # dong: mask -> mask out words that we don't want to interact with
         query = self.w_q(q) # (batch, seq_len, d_model) --> (batch, seq_len, d_model)
         key = self.w_k(k) # (batch, seq_len, d_model) --> (batch, seq_len, d_model)
         value = self.w_v(v) # (batch, seq_len, d_model) --> (batch, seq_len, d_model)
 
         # (batch, seq_len, d_model) --> (batch, seq_len, h, d_k) --> (batch, h, seq_len, d_k)
+        # dong: split into smaller matrices
+        # dong: query shape (batch, h, seq_len, d_k)
         query = query.view(query.shape[0], query.shape[1], self.h, self.d_k).transpose(1, 2)
         key = key.view(key.shape[0], key.shape[1], self.h, self.d_k).transpose(1, 2)
         value = value.view(value.shape[0], value.shape[1], self.h, self.d_k).transpose(1, 2)
@@ -127,6 +136,8 @@ class MultiHeadAttentionBlock(nn.Module):
         
         # Combine all the heads together
         # (batch, h, seq_len, d_k) --> (batch, seq_len, h, d_k) --> (batch, seq_len, d_model)
+        # dong: contiguous ensures the transposed tensor is stored in a contiguous block of memory,
+        # This is often necessary before calling view() to reshape the tensor, as view() requires the tensor to be contiguous.
         x = x.transpose(1, 2).contiguous().view(x.shape[0], -1, self.h * self.d_k)
 
         # Multiply by Wo
@@ -137,11 +148,14 @@ class EncoderBlock(nn.Module):
 
     def __init__(self, features: int, self_attention_block: MultiHeadAttentionBlock, feed_forward_block: FeedForwardBlock, dropout: float) -> None:
         super().__init__()
-        self.self_attention_block = self_attention_block
+        self.self_attention_block = self_attention_block # multihead attention
         self.feed_forward_block = feed_forward_block
+        # dong: two are two residual connections in one encoder block
         self.residual_connections = nn.ModuleList([ResidualConnection(features, dropout) for _ in range(2)])
 
     def forward(self, x, src_mask):
+        #dong: src_mask is the mask we want to make on the input of the encoder. Why need it? we want to hide the interaction between
+        #the padding words and other words
         x = self.residual_connections[0](x, lambda x: self.self_attention_block(x, x, x, src_mask))
         x = self.residual_connections[1](x, self.feed_forward_block)
         return x
@@ -162,13 +176,17 @@ class DecoderBlock(nn.Module):
 
     def __init__(self, features: int, self_attention_block: MultiHeadAttentionBlock, cross_attention_block: MultiHeadAttentionBlock, feed_forward_block: FeedForwardBlock, dropout: float) -> None:
         super().__init__()
-        self.self_attention_block = self_attention_block
+        self.self_attention_block = self_attention_block #dong: after input is self-attention
         self.cross_attention_block = cross_attention_block
         self.feed_forward_block = feed_forward_block
+        #dong:three residual connections in a decoder block
         self.residual_connections = nn.ModuleList([ResidualConnection(features, dropout) for _ in range(3)])
 
     def forward(self, x, encoder_output, src_mask, tgt_mask):
+        #dong: src_mask comes from the encoder (english)
+        #dong: tgt_mask comes from the decoder (italian)
         x = self.residual_connections[0](x, lambda x: self.self_attention_block(x, x, x, tgt_mask))
+        #dong: below x: query, encoder_output: key, encoder_output: value
         x = self.residual_connections[1](x, lambda x: self.cross_attention_block(x, encoder_output, encoder_output, src_mask))
         x = self.residual_connections[2](x, self.feed_forward_block)
         return x
@@ -207,6 +225,7 @@ class Transformer(nn.Module):
         self.tgt_pos = tgt_pos
         self.projection_layer = projection_layer
 
+    # dong: the following 3 functions instead of farward() for re-usability
     def encode(self, src, src_mask):
         # (batch, seq_len, d_model)
         src = self.src_embed(src)
@@ -224,11 +243,15 @@ class Transformer(nn.Module):
         return self.projection_layer(x)
     
 def build_transformer(src_vocab_size: int, tgt_vocab_size: int, src_seq_len: int, tgt_seq_len: int, d_model: int=512, N: int=6, h: int=8, dropout: float=0.1, d_ff: int=2048) -> Transformer:
+    #dong: src_seq_len doesn't have to equal to tgt_seq_len
+    #dong: N is the # of blocks, h: # of heads, d_ff: hidden layer dim
+
     # Create the embedding layers
     src_embed = InputEmbeddings(d_model, src_vocab_size)
     tgt_embed = InputEmbeddings(d_model, tgt_vocab_size)
 
     # Create the positional encoding layers
+    #dong: don't need to define 2 pos encodings, here for education purpose
     src_pos = PositionalEncoding(d_model, src_seq_len, dropout)
     tgt_pos = PositionalEncoding(d_model, tgt_seq_len, dropout)
     
@@ -254,6 +277,7 @@ def build_transformer(src_vocab_size: int, tgt_vocab_size: int, src_seq_len: int
     decoder = Decoder(d_model, nn.ModuleList(decoder_blocks))
     
     # Create the projection layer
+    #dong: translation task, so project decoder output to tgt_vocab_size
     projection_layer = ProjectionLayer(d_model, tgt_vocab_size)
     
     # Create the transformer
