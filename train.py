@@ -27,23 +27,27 @@ def greedy_decode(model, source, source_mask, tokenizer_src, tokenizer_tgt, max_
     sos_idx = tokenizer_tgt.token_to_id('[SOS]')
     eos_idx = tokenizer_tgt.token_to_id('[EOS]')
 
-    # Precompute the encoder output and reuse it for every step
+    # Precompute the encoder output and reuse it for every step (dong: for every token we get from the decoder)
     encoder_output = model.encode(source, source_mask)
     # Initialize the decoder input with the sos token
+    # dong: (1, 1) the 1st dim is for the batch. the 2nd is for decoder input
     decoder_input = torch.empty(1, 1).fill_(sos_idx).type_as(source).to(device)
     while True:
         if decoder_input.size(1) == max_len:
             break
 
         # build mask for target
+        #dong: no padding tokens here, only look at previous tokens
         decoder_mask = causal_mask(decoder_input.size(1)).type_as(source_mask).to(device)
 
         # calculate output
+        #dong: re-use the encoder_output
         out = model.decode(encoder_output, source_mask, decoder_input, decoder_mask)
 
-        # get next token
+        # get next token dong: we only want project for the last token
         prob = model.project(out[:, -1])
-        _, next_word = torch.max(prob, dim=1)
+        _, next_word = torch.max(prob, dim=1) #dong greedy search
+        #dong: append the word back to the decoder input, so it becomes the input of the next iteration
         decoder_input = torch.cat(
             [decoder_input, torch.empty(1, 1).type_as(source).fill_(next_word.item()).to(device)], dim=1
         )
@@ -51,7 +55,7 @@ def greedy_decode(model, source, source_mask, tokenizer_src, tokenizer_tgt, max_
         if next_word == eos_idx:
             break
 
-    return decoder_input.squeeze(0)
+    return decoder_input.squeeze(0) #dong: remove the batch dimension
 
 
 def run_validation(model, validation_ds, tokenizer_src, tokenizer_tgt, max_len, device, print_msg, global_step, writer, num_examples=2):
@@ -92,6 +96,7 @@ def run_validation(model, validation_ds, tokenizer_src, tokenizer_tgt, max_len, 
             predicted.append(model_out_text)
             
             # Print the source, target and model output
+            #dong: why not use print? during tqdm, not suggested to use print, here use print from tqdm
             print_msg('-'*console_width)
             print_msg(f"{f'SOURCE: ':>12}{source_text}")
             print_msg(f"{f'TARGET: ':>12}{target_text}")
@@ -102,6 +107,7 @@ def run_validation(model, validation_ds, tokenizer_src, tokenizer_tgt, max_len, 
                 break
     
     if writer:
+        #dong: here we use TorchMetrics lib which can calculate charErrorRate, BLUE, wordErrorRate
         # Evaluate the character error rate
         # Compute the char error rate 
         metric = torchmetrics.CharErrorRate()
@@ -122,15 +128,21 @@ def run_validation(model, validation_ds, tokenizer_src, tokenizer_tgt, max_len, 
         writer.flush()
 
 def get_all_sentences(ds, lang):
+    #dong: each item is a pair of sentence, e.g., one English one Italian
     for item in ds:
+        #dong: item['translation'] is the pair
         yield item['translation'][lang]
 
 def get_or_build_tokenizer(config, ds, lang):
+    #dong: config is model configration
+    #ds is dataset
+    #lang is the language
     tokenizer_path = Path(config['tokenizer_file'].format(lang))
     if not Path.exists(tokenizer_path):
         # Most code taken from: https://huggingface.co/docs/tokenizers/quicktour
-        tokenizer = Tokenizer(WordLevel(unk_token="[UNK]"))
+        tokenizer = Tokenizer(WordLevel(unk_token="[UNK]")) # dong: if tokenizer sees an unknown word, it will replace it with [UNK]
         tokenizer.pre_tokenizer = Whitespace()
+        #dong: build a trainer to train our tokenizer
         trainer = WordLevelTrainer(special_tokens=["[UNK]", "[PAD]", "[SOS]", "[EOS]"], min_frequency=2)
         tokenizer.train_from_iterator(get_all_sentences(ds, lang), trainer=trainer)
         tokenizer.save(str(tokenizer_path))
@@ -139,22 +151,27 @@ def get_or_build_tokenizer(config, ds, lang):
     return tokenizer
 
 def get_ds(config):
+    #dong: load the dataset
     # It only has the train split, so we divide it overselves
+    #dong: here dataset is `opus_books`, we choose English to Italian
     ds_raw = load_dataset(f"{config['datasource']}", f"{config['lang_src']}-{config['lang_tgt']}", split='train')
 
     # Build tokenizers
-    tokenizer_src = get_or_build_tokenizer(config, ds_raw, config['lang_src'])
-    tokenizer_tgt = get_or_build_tokenizer(config, ds_raw, config['lang_tgt'])
+    tokenizer_src = get_or_build_tokenizer(config, ds_raw, config['lang_src']) #dong: English
+    tokenizer_tgt = get_or_build_tokenizer(config, ds_raw, config['lang_tgt']) #dong: Italian
 
     # Keep 90% for training, 10% for validation
     train_ds_size = int(0.9 * len(ds_raw))
     val_ds_size = len(ds_raw) - train_ds_size
+    #dong: random_split is from pytorch: split ds_raw into two of size in [1, 2]
     train_ds_raw, val_ds_raw = random_split(ds_raw, [train_ds_size, val_ds_size])
 
+    #dong: BilingualDataset is our own implementation in dataset.py
     train_ds = BilingualDataset(train_ds_raw, tokenizer_src, tokenizer_tgt, config['lang_src'], config['lang_tgt'], config['seq_len'])
     val_ds = BilingualDataset(val_ds_raw, tokenizer_src, tokenizer_tgt, config['lang_src'], config['lang_tgt'], config['seq_len'])
 
     # Find the maximum length of each sentence in the source and target sentence
+    #dong: print out to guide the choice of seq_len in config file
     max_len_src = 0
     max_len_tgt = 0
 
@@ -217,6 +234,7 @@ def train_model(config):
     else:
         print('No model to preload, starting from scratch')
 
+    #dong: label_smoothing lets model less confident about its prediction; take 10% scores and give to others
     loss_fn = nn.CrossEntropyLoss(ignore_index=tokenizer_src.token_to_id('[PAD]'), label_smoothing=0.1).to(device)
 
     for epoch in range(initial_epoch, config['num_epochs']):
@@ -233,16 +251,17 @@ def train_model(config):
             # Run the tensors through the encoder, decoder and the projection layer
             encoder_output = model.encode(encoder_input, encoder_mask) # (B, seq_len, d_model)
             decoder_output = model.decode(encoder_output, encoder_mask, decoder_input, decoder_mask) # (B, seq_len, d_model)
-            proj_output = model.project(decoder_output) # (B, seq_len, vocab_size)
+            proj_output = model.project(decoder_output) # (B, seq_len, vocab_size) #dong: here is the target vacob size
 
             # Compare the output with the label
             label = batch['label'].to(device) # (B, seq_len)
 
             # Compute the loss using a simple cross entropy
+            #dong:proj_output.view() transforms (B, seq_len, tgt_vocab_size) --> (B * seq_len, tgt_vocab_size, )
             loss = loss_fn(proj_output.view(-1, tokenizer_tgt.get_vocab_size()), label.view(-1))
             batch_iterator.set_postfix({"loss": f"{loss.item():6.3f}"})
 
-            # Log the loss
+            # Log the loss # to tensorboard
             writer.add_scalar('train loss', loss.item(), global_step)
             writer.flush()
 
@@ -263,7 +282,7 @@ def train_model(config):
         torch.save({
             'epoch': epoch,
             'model_state_dict': model.state_dict(),
-            'optimizer_state_dict': optimizer.state_dict(),
+            'optimizer_state_dict': optimizer.state_dict(), #dong: better to save for resuming training
             'global_step': global_step
         }, model_filename)
 

@@ -5,6 +5,7 @@ from torch.utils.data import Dataset
 class BilingualDataset(Dataset):
 
     def __init__(self, ds, tokenizer_src, tokenizer_tgt, src_lang, tgt_lang, seq_len):
+        #dong: ds is the datsaet opus_books downloaded from hugging face
         super().__init__()
         self.seq_len = seq_len
 
@@ -14,6 +15,7 @@ class BilingualDataset(Dataset):
         self.src_lang = src_lang
         self.tgt_lang = tgt_lang
 
+        #dong: it doesn't matter to use tokenizer_tgt or tokenizer_src cuz both contains SOS, use long int
         self.sos_token = torch.tensor([tokenizer_tgt.token_to_id("[SOS]")], dtype=torch.int64)
         self.eos_token = torch.tensor([tokenizer_tgt.token_to_id("[EOS]")], dtype=torch.int64)
         self.pad_token = torch.tensor([tokenizer_tgt.token_to_id("[PAD]")], dtype=torch.int64)
@@ -27,10 +29,12 @@ class BilingualDataset(Dataset):
         tgt_text = src_target_pair['translation'][self.tgt_lang]
 
         # Transform the text into tokens
+        #dong: including split a sentence into words, and then map each word into a token
         enc_input_tokens = self.tokenizer_src.encode(src_text).ids
         dec_input_tokens = self.tokenizer_tgt.encode(tgt_text).ids
 
         # Add sos, eos and padding to each sentence
+        #dong: how many padding tokens are needed to reach seq_len
         enc_num_padding_tokens = self.seq_len - len(enc_input_tokens) - 2  # We will add <s> and </s>
         # We will only add <s>, and </s> only on the label
         dec_num_padding_tokens = self.seq_len - len(dec_input_tokens) - 1
@@ -61,6 +65,7 @@ class BilingualDataset(Dataset):
         )
 
         # Add only </s> token
+        #dong: or called `target` (what we expect as output from the decoder)
         label = torch.cat(
             [
                 torch.tensor(dec_input_tokens, dtype=torch.int64),
@@ -78,13 +83,20 @@ class BilingualDataset(Dataset):
         return {
             "encoder_input": encoder_input,  # (seq_len)
             "decoder_input": decoder_input,  # (seq_len)
+            #dong: `encode_mask` is to mask out the padding tokens from participating self-attention
+            #(1, 1, seq_len)L it can be broadcasted correctly across the batch and attention heads during
+            # the computation of self-attention
             "encoder_mask": (encoder_input != self.pad_token).unsqueeze(0).unsqueeze(0).int(), # (1, 1, seq_len)
+            #dong: `decoder_mask` is a causal mask, each word can only look at the words (non-padding) before it
+            # (1, 1, seq_len, seq_len): two `seq_len` to create causal mask
             "decoder_mask": (decoder_input != self.pad_token).unsqueeze(0).int() & causal_mask(decoder_input.size(0)), # (1, seq_len) & (1, seq_len, seq_len),
             "label": label,  # (seq_len)
+            #dong: below for visualization
             "src_text": src_text,
             "tgt_text": tgt_text,
         }
     
 def causal_mask(size):
+    #dong: make all values above diagonal to be 0
     mask = torch.triu(torch.ones((1, size, size)), diagonal=1).type(torch.int)
     return mask == 0
