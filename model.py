@@ -46,6 +46,7 @@ class InputEmbeddings(nn.Module):
     def forward(self, x):
         # (batch, seq_len) --> (batch, seq_len, d_model)
         # Multiply by sqrt(d_model) to scale the embeddings according to the paper
+        #dong: x is a token sequence, e.g., [1, 2, 3]
         return self.embedding(x) * math.sqrt(self.d_model)
     
 class PositionalEncoding(nn.Module):
@@ -54,12 +55,13 @@ class PositionalEncoding(nn.Module):
         super().__init__()
         self.d_model = d_model
         self.seq_len = seq_len
-        self.dropout = nn.Dropout(dropout)
-        # Create a matrix of shape (seq_len, d_model)
+        self.dropout = nn.Dropout(dropout) #dong: Dropout layer for regularization
+
+        # Create a matrix of shape (seq_len, d_model) #dong: to hold positional encodings of shape (seq_len, d_model)
         pe = torch.zeros(seq_len, d_model)
-        # Create a vector of shape (seq_len)
+        # Create a vector of shape (seq_len) #dong: create a vector of positions (0, 1, 2, ..., seq_len - 1) and reshape to (seq_len, 1)
         position = torch.arange(0, seq_len, dtype=torch.float).unsqueeze(1) # (seq_len, 1)
-        # Create a vector of shape (d_model) #dong: log space for numerical stability
+        # Create a vector of shape (d_model) #dong: create a vector for the division term, using log space for numerical stability
         div_term = torch.exp(torch.arange(0, d_model, 2).float() * (-math.log(10000.0) / d_model)) # (d_model / 2)
         # Apply sine to even indices # dong: start from 0, every 2 pos
         pe[:, 0::2] = torch.sin(position * div_term) # sin(position * (10000 ** (2i / d_model))
@@ -71,6 +73,9 @@ class PositionalEncoding(nn.Module):
         self.register_buffer('pe', pe) # dong: for non-trainable params
 
     def forward(self, x):
+        #dong: add positional embedding to the input embeddings and apply dropout
+        # x.shape[1] slices the positional encodings to match the actual sequence length of the input x;
+        # first : selects all batches, last : selects all embedding dimensions
         x = x + (self.pe[:, :x.shape[1], :]).requires_grad_(False) # (batch, seq_len, d_model)
         return self.dropout(x)
 
@@ -82,7 +87,7 @@ class ResidualConnection(nn.Module):
             self.norm = LayerNormalization(features)
     
         def forward(self, x, sublayer):
-            #Dong: sublayer is the previous layer
+            #dong: sublayer is the previous layer
             #dong: some paper also did first sublayer() followed by norm()
             return x + self.dropout(sublayer(self.norm(x)))
 
@@ -107,15 +112,18 @@ class MultiHeadAttentionBlock(nn.Module):
         d_k = query.shape[-1]
         # Just apply the formula from the paper
         # (batch, h, seq_len, d_k) --> (batch, h, seq_len, seq_len)
+        #dong: shape: (batch, h, seq_len, d_k) @ (batch, h, d_k, seq_len) -> (batch, h, seq_len, seq_len)
         attention_scores = (query @ key.transpose(-2, -1)) / math.sqrt(d_k)
         if mask is not None:
             # Write a very low value (indicating -inf) to the positions where mask == 0
             attention_scores.masked_fill_(mask == 0, -1e9) #dong: all 0 in mask will be replaced by -1e9
-        attention_scores = attention_scores.softmax(dim=-1) # (batch, h, seq_len, seq_len) # Apply softmax
+        attention_scores = attention_scores.softmax(dim=-1) # (batch, h, seq_len, seq_len) # Apply softmax #dong: summing to 1 across the last dimension
         if dropout is not None:
             attention_scores = dropout(attention_scores)
         # (batch, h, seq_len, seq_len) --> (batch, h, seq_len, d_k)
         # return attention scores which can be used for visualization
+        #dong: Compute the final output by multiplying the attention scores with the value vectors
+        #dong: Shape: (batch, h, seq_len, seq_len) @ (batch, h, seq_len, d_k) -> (batch, h, seq_len, d_k)
         return (attention_scores @ value), attention_scores
 
     def forward(self, q, k, v, mask):
@@ -156,6 +164,8 @@ class EncoderBlock(nn.Module):
     def forward(self, x, src_mask):
         #dong: src_mask is the mask we want to make on the input of the encoder. Why need it? we want to hide the interaction between
         #the padding words and other words
+        #dong: lambda function allows `self.residual_connections[0]` to apply the self-attention block to `x` within the context of a residual connection,
+        #lambda func here was used to create a callable that includes specific arguments (x, x, x, scr_mask)
         x = self.residual_connections[0](x, lambda x: self.self_attention_block(x, x, x, src_mask))
         x = self.residual_connections[1](x, self.feed_forward_block)
         return x
@@ -225,7 +235,7 @@ class Transformer(nn.Module):
         self.tgt_pos = tgt_pos
         self.projection_layer = projection_layer
 
-    # dong: the following 3 functions instead of farward() for re-usability
+    # dong: the following 3 functions instead of forward() for re-usability
     def encode(self, src, src_mask):
         # (batch, seq_len, d_model)
         src = self.src_embed(src)
