@@ -27,27 +27,28 @@ def greedy_decode(model, source, source_mask, tokenizer_src, tokenizer_tgt, max_
     sos_idx = tokenizer_tgt.token_to_id('[SOS]')
     eos_idx = tokenizer_tgt.token_to_id('[EOS]')
 
-    # Precompute the encoder output and reuse it for every step (dong: for every token we get from the decoder)
+    # Precompute the encoder output and reuse it for every step (dong: this is for every token we get from the decoder)
     encoder_output = model.encode(source, source_mask)
     # Initialize the decoder input with the sos token
-    # dong: (1, 1) the 1st dim is for the batch. the 2nd is for decoder input
+    # dong: (1, 1) tensor filled with the value of sos_idx - the 1st dim is for the batch and the 2nd dim is for the decoder input
     decoder_input = torch.empty(1, 1).fill_(sos_idx).type_as(source).to(device)
     while True:
         if decoder_input.size(1) == max_len:
             break
 
         # build mask for target
-        #dong: no padding tokens here, only look at previous tokens
+        # dong: no padding tokens here, only look at previous tokens
+        # creates a lower triangular matrix of ones with dimensions (size, size), which serves as the causal mask
         decoder_mask = causal_mask(decoder_input.size(1)).type_as(source_mask).to(device)
 
         # calculate output
-        #dong: re-use the encoder_output
+        # dong: re-use the encoder_output
         out = model.decode(encoder_output, source_mask, decoder_input, decoder_mask)
 
         # get next token dong: we only want project for the last token
         prob = model.project(out[:, -1])
         _, next_word = torch.max(prob, dim=1) #dong greedy search
-        #dong: append the word back to the decoder input, so it becomes the input of the next iteration
+        # dong: append the word back to the decoder input, so it becomes the input of the next iteration
         decoder_input = torch.cat(
             [decoder_input, torch.empty(1, 1).type_as(source).fill_(next_word.item()).to(device)], dim=1
         )
@@ -96,7 +97,7 @@ def run_validation(model, validation_ds, tokenizer_src, tokenizer_tgt, max_len, 
             predicted.append(model_out_text)
             
             # Print the source, target and model output
-            #dong: why not use print? during tqdm, not suggested to use print, here use print from tqdm
+            # dong: why not use print? during tqdm, not suggested to use print, here use print from tqdm
             print_msg('-'*console_width)
             print_msg(f"{f'SOURCE: ':>12}{source_text}")
             print_msg(f"{f'TARGET: ':>12}{target_text}")
@@ -107,7 +108,7 @@ def run_validation(model, validation_ds, tokenizer_src, tokenizer_tgt, max_len, 
                 break
     
     if writer:
-        #dong: here we use TorchMetrics lib which can calculate charErrorRate, BLUE, wordErrorRate
+        # dong: here we use TorchMetrics lib which can calculate charErrorRate, BLUE, wordErrorRate
         # Evaluate the character error rate
         # Compute the char error rate 
         metric = torchmetrics.CharErrorRate()
@@ -234,7 +235,8 @@ def train_model(config):
     else:
         print('No model to preload, starting from scratch')
 
-    #dong: label_smoothing lets model less confident about its prediction; take 10% scores and give to others
+    # dong: label_smoothing lets model less confident about its prediction; take 10% scores and give to others
+    # label_smoothing=0.1 means that 10% of the probability mass is distributed across all classes, with the true class receiving slightly less than 1. This can help improve the model's performance and robustness.
     loss_fn = nn.CrossEntropyLoss(ignore_index=tokenizer_src.token_to_id('[PAD]'), label_smoothing=0.1).to(device)
 
     for epoch in range(initial_epoch, config['num_epochs']):
@@ -243,7 +245,7 @@ def train_model(config):
         batch_iterator = tqdm(train_dataloader, desc=f"Processing Epoch {epoch:02d}")
         for batch in batch_iterator:
 
-            encoder_input = batch['encoder_input'].to(device) # (b, seq_len)
+            encoder_input = batch['encoder_input'].to(device) # (B, seq_len)
             decoder_input = batch['decoder_input'].to(device) # (B, seq_len)
             encoder_mask = batch['encoder_mask'].to(device) # (B, 1, 1, seq_len)
             decoder_mask = batch['decoder_mask'].to(device) # (B, 1, seq_len, seq_len)
@@ -257,7 +259,7 @@ def train_model(config):
             label = batch['label'].to(device) # (B, seq_len)
 
             # Compute the loss using a simple cross entropy
-            #dong:proj_output.view() transforms (B, seq_len, tgt_vocab_size) --> (B * seq_len, tgt_vocab_size, )
+            # dong:proj_output.view() transforms (B, seq_len, tgt_vocab_size) --> (B * seq_len, tgt_vocab_size, )
             loss = loss_fn(proj_output.view(-1, tokenizer_tgt.get_vocab_size()), label.view(-1))
             batch_iterator.set_postfix({"loss": f"{loss.item():6.3f}"})
 

@@ -100,7 +100,7 @@ class BilingualDataset(Dataset):
             # Create the encoder mask
             # encoder_mask = (encoder_input != pad_token).unsqueeze(0).unsqueeze(0).int()
             # tensor([[[1, 1, 1, 0, 0, 0]]], dtype=torch.int32)
-            "encoder_mask": (encoder_input != self.pad_token).unsqueeze(0).unsqueeze(0).int(), # (1, 1, seq_len)
+            "encoder_mask": (encoder_input != self.pad_token).unsqueeze(0).unsqueeze(0).int(), # (1, 1, seq_len) #dong: first 1 broadcast to h, second 1 to seq_len, will be expanded to (batch, h, seq_len, seq_len)
             # dong: `decoder_mask` is a causal mask, each word can only look at the words (non-padding) before it
             # decoder mask size: (1, 1, seq_len, seq_len): here we use two `seq_len` to create a causal mask
             # padding mask: tensor([[1, 1, 1, 0, 0]], dtype=torch.int32)
